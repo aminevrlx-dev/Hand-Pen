@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hand Pen 🌙</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --gold: #F5D061;
+      --gold-dim: rgba(245, 208, 97, 0.35);
+      --bg: #050301;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      overflow: hidden;
+      height: 100%;
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    video { display: none; }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+
+    /* ---------- Mobile control buttons ---------- */
+    #mobileControls {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: max(18px, env(safe-area-inset-bottom));
+      z-index: 3;
+      display: none;
+      justify-content: center;
+      gap: 22px;
+      pointer-events: none;
+    }
+
+    #mobileControls.active {
+      display: flex;
+    }
+
+    .moon-btn {
+      pointer-events: auto;
+      width: 62px;
+      height: 62px;
+      border-radius: 50%;
+      border: none;
+      background: radial-gradient(circle at 35% 30%, #fff6d8, var(--gold) 65%, #c99f2e 100%);
+      box-shadow: 0 0 18px 2px var(--gold-dim), 0 4px 10px rgba(0,0,0,0.5);
+      color: #241a00;
+      font-size: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform: scaleX(-1); /* undo the canvas mirror so glyphs read normally */
+      transition: transform 0.12s ease, filter 0.12s ease;
+    }
+
+    .moon-btn:active {
+      transform: scaleX(-1) scale(0.88);
+      filter: brightness(0.85);
+    }
+
+    .moon-btn:disabled {
+      opacity: 0.35;
+      filter: grayscale(1);
+    }
+
+    /* ---------- Rotate-device overlay ---------- */
+    #rotateOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      background: rgba(5, 3, 1, 0.96);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--gold);
+      text-align: center;
+      padding: 24px;
+    }
+
+    #rotateOverlay.show {
+      display: flex;
+    }
+
+    .phone-wrap {
+      width: 130px;
+      height: 130px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 28px;
+    }
+
+    .phone {
+      width: 54px;
+      height: 96px;
+      border: 4px solid var(--gold);
+      border-radius: 12px;
+      position: relative;
+      box-shadow: 0 0 20px var(--gold-dim);
+      animation: rotatePhone 2.2s ease-in-out infinite;
+    }
+
+    .phone::after {
+      content: '';
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 14px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--gold);
+    }
+
+    @keyframes rotatePhone {
+      0%   { transform: rotate(0deg); }
+      35%  { transform: rotate(0deg); }
+      65%  { transform: rotate(-90deg); }
+      100% { transform: rotate(-90deg); }
+    }
+
+    #rotateOverlay h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    #rotateOverlay p {
+      margin: 0;
+      font-size: 14px;
+      color: rgba(245, 208, 97, 0.65);
+      max-width: 260px;
+    }
+  </style>
+</head>
+<body>
+  <video id="vid"></video>
+  <canvas id="c"></canvas>
+
+  <div id="mobileControls">
+    <button class="moon-btn" id="btnUndo" title="Desfazer">↶</button>
+    <button class="moon-btn" id="btnRedo" title="Refazer">↷</button>
+  </div>
+
+  <div id="rotateOverlay">
+    <div class="phone-wrap"><div class="phone"></div></div>
+    <h2>Vire o celular de lado</h2>
+    <p>Use a câmera na horizontal para desenhar com o dedo 🌙</p>
+  </div>
+
+  <script>
+    var vid = document.getElementById('vid');
+    var c = document.getElementById('c');
+    var ctx = c.getContext('2d');
+    var arr = [];       // finished strokes
+    var redoArr = [];   // strokes available for redo
+    var cur = [];
+    var shift = false;  // desktop draw-hold key
+    var draw = false;
+    var sx = null;
+    var sy = null;
+
+    var isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+    var overlay = document.getElementById('rotateOverlay');
+    var mobileControls = document.getElementById('mobileControls');
+    var btnUndo = document.getElementById('btnUndo');
+    var btnRedo = document.getElementById('btnRedo');
+
+    function isLandscape() {
+      return window.innerWidth >= window.innerHeight;
+    }
+
+    function landscapeOk() {
+      return !isMobile || isLandscape();
+    }
+
+    function doUndo() {
+      if (arr.length > 0) {
+        redoArr.push(arr.pop());
+      }
+    }
+
+    function doRedo() {
+      if (redoArr.length > 0) {
+        arr.push(redoArr.pop());
+      }
+    }
+
+    function startNewStroke() {
+      cur = [];
+      arr.push(cur);
+      redoArr = []; // new stroke invalidates the redo history
+    }
+
+    function updateOrientationUI() {
+      if (isMobile) {
+        mobileControls.classList.add('active');
+        if (isLandscape()) {
+          overlay.classList.remove('show');
+        } else {
+          overlay.classList.add('show');
+        }
+      } else {
+        mobileControls.classList.remove('active');
+        overlay.classList.remove('show');
+      }
+    }
+
+    window.addEventListener('resize', updateOrientationUI);
+    window.addEventListener('orientationchange', updateOrientationUI);
+    updateOrientationUI();
+
+    window.onkeydown = function(e) {
+      if (e.key == 'Shift') shift = true;
+      if (e.code == 'Space') { arr = []; redoArr = []; }
+      var k = e.key.toLowerCase();
+      if (k == 'z') doUndo();
+      if (k == 'x') doRedo();
+    }
+
+    window.onkeyup = function(e) {
+      if (e.key == 'Shift') shift = false;
+    }
+
+    btnUndo.addEventListener('click', function() {
+      if (landscapeOk()) doUndo();
+    });
+
+    btnRedo.addEventListener('click', function() {
+      if (landscapeOk()) doRedo();
+    });
+
+    function run(res) {
+      c.width = window.innerWidth;
+      c.height = window.innerHeight;
+      ctx.drawImage(res.image, 0, 0, c.width, c.height);
+      ctx.fillStyle = 'rgba(10, 6, 2, 0.85)';
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      ctx.shadowColor = '#F5D061';
+      ctx.shadowBlur = 15;
+      ctx.strokeStyle = '#F5D061';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      for (var i = 0; i < arr.length; i++) {
+        ctx.beginPath();
+        for (var j = 0; j < arr[i].length; j++) {
+          if (j == 0) ctx.moveTo(arr[i][j].x, arr[i][j].y);
+          else ctx.lineTo(arr[i][j].x, arr[i][j].y);
+        }
+        ctx.stroke();
+      }
+
+      var canActuallyDraw = landscapeOk();
+
+      if (canActuallyDraw && res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        var lm = res.multiHandLandmarks[0];
+        drawConnectors(ctx, lm, HAND_CONNECTIONS, {color: 'rgba(245, 208, 97, 0.3)', lineWidth: 2});
+        drawLandmarks(ctx, lm, {color: '#FFFFFF', lineWidth: 1, radius: 2});
+
+        var ind = lm[8];
+        var rx = ind.x * c.width;
+        var ry = ind.y * c.height;
+
+        if (sx == null) {
+          sx = rx;
+          sy = ry;
+        } else {
+          sx += (rx - sx) * 0.45;
+          sy += (ry - sy) * 0.45;
+        }
+
+        // Mobile: drawing starts as soon as the finger is visible.
+        // Desktop: still requires holding Shift.
+        var wantsToDraw = isMobile ? true : shift;
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, 6, 0, 2 * Math.PI);
+        ctx.fillStyle = wantsToDraw ? '#FFFFFF' : 'rgba(245, 208, 97, 0.4)';
+        ctx.fill();
+
+        if (wantsToDraw) {
+          if (!draw) {
+            draw = true;
+            startNewStroke();
+          }
+          cur.push({x: sx, y: sy});
+        } else {
+          draw = false;
+        }
+      } else {
+        draw = false;
+        sx = null;
+      }
+    }
+
+    var h = new Hands({
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+      }
+    });
+
+    h.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    h.onResults(run);
+
+    var cam = new Camera(vid, {
+      onFrame: async () => { await h.send({image: vid}); },
+      width: 1280,
+      height: 720
+    });
+
+    cam.start();
+  </script>
+</body>
+</html>
