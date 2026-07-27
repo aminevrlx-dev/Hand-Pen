@@ -25,7 +25,7 @@ Hand Pen lets you draw naturally by tracking your hand through your webcam using
 
 ```bash
 git clone https://github.com/aminevrlx-dev/Hand-Pen.git
-cd HandPen
+cd Hand-Pen
 ```
 
 ### 2. Start a local server
